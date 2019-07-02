@@ -16,7 +16,7 @@ from itertools import chain
 
 from dmoj import graders
 from dmoj.api import api
-from dmoj.api.transport import SocketTransport
+from dmoj.api.transport import SocketTransport, HTTPSTransport
 from dmoj.config import ConfigNode
 from dmoj.control import JudgeControlRequestHandler
 from dmoj.error import CompileError
@@ -354,6 +354,12 @@ class ClassicJudge(Judge):
         self.api = api.ApiManager(host, port, self, env['id'], env['key'], SocketTransport, **kwargs)
 
 
+class HTTPSJudge(Judge):
+    def __init__(self, host, port, **kwargs):
+        super(HTTPSJudge, self).__init__()
+        self.api = api.ApiManager(host, port, self, env['id'], env['key'], HTTPSTransport, **kwargs)
+
+
 def sanity_check():
     # Don't allow starting up without wbox/cptbox, saves cryptic errors later on
     if os.name == 'nt':
@@ -432,9 +438,12 @@ def judge_proc(need_monitor):
     else:
         setproctitle(proctitle)
 
-    judge = ClassicJudge(judgeenv.server_host, judgeenv.server_port,
-                         secure=judgeenv.secure, no_cert_check=judgeenv.no_cert_check,
-                         cert_store=judgeenv.cert_store)
+    if judgeenv.transport == 'https':
+        judge = HTTPSJudge(judgeenv.server_host, judgeenv.server_port, path=judgeenv.endpoint, interval=judgeenv.interval)
+    else:
+        judge = ClassicJudge(judgeenv.server_host, judgeenv.server_port,
+                            secure=judgeenv.secure, no_cert_check=judgeenv.no_cert_check,
+                            cert_store=judgeenv.cert_store)
     if need_monitor:
         monitor = Monitor()
         monitor.callback = judge.update_problems

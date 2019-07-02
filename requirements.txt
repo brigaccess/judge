@@ -8,3 +8,4 @@ pygments
 six
 setproctitle
 pylru
+requests

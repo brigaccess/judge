@@ -48,7 +48,7 @@ _root = os.path.dirname(__file__)
 
 log_file = server_host = server_port = no_ansi = no_ansi_emu = no_watchdog = problem_regex = case_regex = None
 secure = no_cert_check = False
-cert_store = api_listen = None
+cert_store = api_listen = transport = endpoint = interval = None
 
 startup_warnings = []
 cli_command = []
@@ -61,7 +61,7 @@ def load_env(cli=False, testsuite=False):  # pragma: no cover
     global problem_dirs, only_executors, exclude_executors, log_file, server_host, \
         server_port, no_ansi, no_ansi_emu, env, startup_warnings, no_watchdog, \
         problem_regex, case_regex, api_listen, secure, no_cert_check, cert_store, \
-        problem_watches, cli_command
+        problem_watches, cli_command, transport, endpoint, interval
 
     if cli:
         description = 'Starts a shell for interfacing with a local judge instance.'
@@ -75,6 +75,11 @@ def load_env(cli=False, testsuite=False):  # pragma: no cover
         parser.add_argument('judge_key', nargs='?', help='judge key (overrides configuration)')
         parser.add_argument('-p', '--server-port', type=int, default=9999,
                             help='port to connect for the server')
+        # TODO the rest of the owl
+        parser.add_argument('-t', '--transport', choices=['socket', 'https'], default='socket',
+                            help='connection transport to be used')
+        parser.add_argument('--endpoint', type=str, default='/', help='path to https endpoint')
+        parser.add_argument('-i', '--interval', type=int, default=5, help='https request interval')
     else:
         parser.add_argument('command', nargs='*', help='invoke CLI command without spawning shell')
 
@@ -121,6 +126,9 @@ def load_env(cli=False, testsuite=False):  # pragma: no cover
 
     server_host = getattr(args, 'server_host', None)
     server_port = getattr(args, 'server_port', None)
+    transport = getattr(args, 'transport', 'socket')
+    interval = getattr(args, 'interval', 5)
+    endpoint = getattr(args, 'endpoint', '/')
     cli_command = getattr(args, 'command', [])
 
     no_ansi_emu = args.no_ansi_emu if os.name == 'nt' else True

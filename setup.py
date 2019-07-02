@@ -166,7 +166,7 @@ setup(
         ],
     },
     ext_modules=cythonize(extensions),
-    install_requires=['watchdog', 'pyyaml', 'ansi2html', 'termcolor', 'pygments', 'six', 'setproctitle', 'pylru'],
+    install_requires=['watchdog', 'pyyaml', 'ansi2html', 'termcolor', 'pygments', 'six', 'setproctitle', 'pylru', 'requests'],
     tests_require=["mock ; python_version<'3.3'", 'requests'],
     extras_require={
         'test': ["mock ; python_version<'3.3'", 'requests'],
