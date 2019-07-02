@@ -14,7 +14,9 @@ import six
 from functools import partial
 from itertools import chain
 
-from dmoj import packet, graders
+from dmoj import graders
+from dmoj.api import api
+from dmoj.api.transport import SocketTransport
 from dmoj.config import ConfigNode
 from dmoj.control import JudgeControlRequestHandler
 from dmoj.error import CompileError
@@ -70,7 +72,7 @@ class Judge(object):
         self.begin_grading = partial(self.process_submission, TYPE_SUBMISSION, self._begin_grading)
         self.custom_invocation = partial(self.process_submission, TYPE_INVOCATION, self._custom_invocation)
 
-        self.packet_manager = None
+        self.api = None
 
         self.updater_exit = False
         self.updater_signal = threading.Event()
@@ -92,7 +94,7 @@ class Judge(object):
 
             try:
                 clear_problem_dirs_cache()
-                self.packet_manager.supported_problems_packet(get_supported_problems())
+                self.api.supported_problems_packet(get_supported_problems())
             except Exception:
                 log.exception('Failed to update problems.')
 
@@ -136,17 +138,17 @@ class Judge(object):
         binary = grader.binary if grader else None
 
         if binary:
-            self.packet_manager.invocation_begin_packet()
+            self.api.invocation_begin_packet()
             try:
                 result = grader.grade(InvocationCase())
             except TerminateGrading:
-                self.packet_manager.submission_terminated_packet()
+                self.api.submission_terminated_packet()
                 print(ansi_style('#ansi[Forcefully terminating invocation.](red|bold)'))
                 pass
             except:
                 self.internal_error()
             else:
-                self.packet_manager.invocation_end_packet(result)
+                self.api.invocation_end_packet(result)
 
         print(ansi_style('Done invoking #ansi[%s](green|bold).\n' % (id,)))
         self._terminate_grading = False
@@ -176,8 +178,7 @@ class Judge(object):
         # the compiler may have failed, or an error could have happened while initializing a custom judge
         # either way, we can't continue
         if binary:
-            self.packet_manager.begin_grading_packet(grader.is_pretested)
-
+            self.api.begin_grading_packet(problem.is_pretested)
             batch_counter = 1
             in_batch = False
 
@@ -186,11 +187,11 @@ class Judge(object):
             try:
                 for result in self.grade_cases(grader, grader.cases(), short_circuit=short_circuit):
                     if isinstance(result, BatchBegin):
-                        self.packet_manager.batch_begin_packet()
+                        self.api.batch_begin_packet()
                         report(ansi_style("#ansi[Batch #%d](yellow|bold)" % batch_counter))
                         in_batch = True
                     elif isinstance(result, BatchEnd):
-                        self.packet_manager.batch_end_packet()
+                        self.api.batch_end_packet()
                         batch_counter += 1
                         in_batch = False
                     else:
@@ -211,18 +212,18 @@ class Judge(object):
                         report(ansi_style('%sTest case %2d %-3s %s' % (case_padding, case_number,
                                                                        colored_codes[0], case_info)))
 
-                        self.packet_manager.test_case_status_packet(case_number, result)
+                        self.api.test_case_status_packet(case_number, result)
 
                         case_number += 1
             except TerminateGrading:
-                self.packet_manager.submission_terminated_packet()
+                self.api.submission_terminated_packet()
                 report(ansi_style('#ansi[Forcefully terminating grading. '
                                   'Temporary files may not be deleted.](red|bold)'))
                 pass
             except:
                 self.internal_error()
             else:
-                self.packet_manager.grading_end_packet()
+                self.api.grading_end_packet()
 
         report(ansi_style('Done grading #ansi[%s](yellow)/#ansi[%s](green|bold).\n' % (problem_id, submission_id)))
 
@@ -307,7 +308,7 @@ class Judge(object):
         # ...we don't want to see the raw ANSI codes from GCC/Clang on the site.
         # We could use format_ansi and send HTML to the site, but the site doesn't presently support HTML
         # internal error formatting.
-        self.packet_manager.internal_error_packet(strip_ansi(message))
+        self.api.internal_error_packet(strip_ansi(message))
 
         # Logs can contain ANSI, and it'll display fine
         print(message, file=sys.stderr)
@@ -328,7 +329,7 @@ class Judge(object):
         Attempts to connect to the handler server specified in command line.
         """
         self.updater.start()
-        self.packet_manager.run()
+        self.api.run()
 
     def __enter__(self):
         return self
@@ -343,14 +344,14 @@ class Judge(object):
         self.terminate_grading()
         self.updater_exit = True
         self.updater_signal.set()
-        if self.packet_manager:
-            self.packet_manager.close()
+        if self.api:
+            self.api.close()
 
 
 class ClassicJudge(Judge):
     def __init__(self, host, port, **kwargs):
         super(ClassicJudge, self).__init__()
-        self.packet_manager = packet.PacketManager(host, port, self, env['id'], env['key'], **kwargs)
+        self.api = api.ApiManager(host, port, self, env['id'], env['key'], SocketTransport, **kwargs)
 
 
 def sanity_check():

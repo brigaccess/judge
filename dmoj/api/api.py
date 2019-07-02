@@ -31,147 +31,34 @@ class JudgeAuthenticationFailed(Exception):
     pass
 
 
-class PacketManager(object):
-    SIZE_PACK = struct.Struct('!I')
+class ApiManager(object):
+    transport = None
 
-    def __init__(self, host, port, judge, name, key, secure=False, no_cert_check=False, cert_store=None):
+    def __init__(self, host, port, judge, name, key, transport=None, **kwargs):
+        self.judge = judge
         self.host = host
         self.port = port
-        self.judge = judge
-        self.name = name
+        self.id = name
         self.key = key
-        self._closed = False
 
-        log.info('Preparing to connect to [%s]:%s as: %s', host, port, name)
-        if secure and ssl:
-            self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
-            self.ssl_context.options |= ssl.OP_NO_SSLv2
-            self.ssl_context.options |= ssl.OP_NO_SSLv3
-
-            if not no_cert_check:
-                self.ssl_context.verify_mode = ssl.CERT_REQUIRED
-                self.ssl_context.check_hostname = True
-
-            if cert_store is None:
-                self.ssl_context.load_default_certs()
-            else:
-                self.ssl_context.load_verify_locations(cafile=cert_store)
-            log.info('Configured to use TLS.')
-        else:
-            self.ssl_context = None
-            log.info('TLS not enabled.')
-
-        self.secure = secure
-        self.no_cert_check = no_cert_check
-        self.cert_store = cert_store
-
-        self._lock = threading.RLock()
-        self._batch = 0
-        # Exponential backoff: starting at 4 seconds.
-        # Certainly hope it won't stack overflow, since it will take days if not years.
-        self.fallback = 4
-
-        self.conn = None
-        self._do_reconnect()
-
-    def _connect(self):
-        problems = get_supported_problems()
-        versions = get_runtime_versions()
-
-        log.info('Opening connection to: [%s]:%s', self.host, self.port)
-
-        while True:
-            try:
-                self.conn = socket.create_connection((self.host, self.port), timeout=5)
-            except OSError as e:
-                if e.errno != errno.EINTR:
-                    raise
-            else:
-                break
-
-        self.conn.settimeout(300)
-        self.conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-
-        if self.ssl_context:
-            log.info('Starting TLS on: [%s]:%s', self.host, self.port)
-            self.conn = self.ssl_context.wrap_socket(self.conn, server_hostname=self.host)
-
-        log.info('Starting handshake with: [%s]:%s', self.host, self.port)
-        self.input = self.conn.makefile('rb')
-        self.output = self.conn.makefile('wb', 0)
-        self.handshake(problems, versions, self.name, self.key)
-        log.info('Judge "%s" online: [%s]:%s', self.name, self.host, self.port)
-
-    def _reconnect(self):
-        if self.fallback > 86400:
-            # Return 0 to avoid supervisor restart.
-            raise SystemExit(0)
-
-        log.warning('Attempting reconnection in %.0fs: [%s]:%s', self.fallback, self.host, self.port)
-
-        if self.conn is not None:
-            log.info('Dropping old connection.')
-            self.conn.close()
-        time.sleep(self.fallback)
-        self.fallback *= 1.5
-        self._do_reconnect()
-
-    def _do_reconnect(self):
-        try:
-            self._connect()
-        except JudgeAuthenticationFailed:
-            log.error('Authentication as "%s" failed on: [%s]:%s', self.name, self.host, self.port)
-            self._reconnect()
-        except socket.error:
-            log.exception('Connection failed due to socket error: [%s]:%s', self.host, self.port)
-            self._reconnect()
-
-    def __del__(self):
-        self.close()
-
-    def close(self):
-        if self.conn and not self._closed:
-            self.conn.shutdown(socket.SHUT_RDWR)
-        self._closed = True
-
-    def _read_async(self):
-        try:
-            while True:
-                self._receive_packet(self._read_single())
-        except KeyboardInterrupt:
-            pass
-        except Exception:  # connection reset by peer
-            traceback.print_exc()
-            raise SystemExit(1)
-
-    def _read_single(self):
-        try:
-            data = self.input.read(PacketManager.SIZE_PACK.size)
-        except socket.error:
-            self._reconnect()
-            return self._read_single()
-        if not data:
-            self._reconnect()
-            return self._read_single()
-        size = PacketManager.SIZE_PACK.unpack(data)[0]
-        try:
-            packet = zlib.decompress(self.input.read(size))
-        except zlib.error:
-            self._reconnect()
-            return self._read_single()
-        else:
-            return json.loads(utf8text(packet))
+        if not transport:
+            raise ValueError('No transport provided for ApiManager')
+        self.transport = transport(host, port, name, key, api=self, **kwargs)
+        self.transport.start()
 
     def run(self):
-        self._read_async()
+        self.transport.run()
+
+    def run_async(self):
+        self.transport.run_async()
 
     def disconnect(self):
-        self.close()
+        self.transport.disconnect()
         self.judge.terminate_grading()
         sys.exit(0)
 
-    def run_async(self):
-        threading.Thread(target=self._read_async).start()
+    def close(self):
+        self.transport.close()
 
     def _send_packet(self, packet, rewrite=True):
         if rewrite and 'submission-id' in packet and self.judge.get_process_type() != 'submission':
@@ -185,11 +72,9 @@ class PacketManager(object):
                 # We cannot use utf8text because it may not be text.
                 packet[k] = v.decode('utf-8', 'replace')
 
-        raw = zlib.compress(utf8bytes(json.dumps(packet)))
-        with self._lock:
-            self.output.writelines((PacketManager.SIZE_PACK.pack(len(raw)), raw))
+        return self.transport.send_packet(packet, rewrite=rewrite)
 
-    def _receive_packet(self, packet):
+    def receive_packet(self, packet):
         name = packet['name']
         if name == 'ping':
             self.ping_packet(packet['when'])
@@ -230,18 +115,18 @@ class PacketManager(object):
         else:
             log.error('Unknown packet %s, payload %s', name, packet)
 
-    def handshake(self, problems, runtimes, id, key):
-        self._send_packet({'name': 'handshake',
+    def handshake(self):
+        problems = get_supported_problems()
+        versions = get_runtime_versions()
+        response = self._send_packet({'name': 'handshake',
                            'problems': problems,
-                           'executors': runtimes,
-                           'id': id,
-                           'key': key})
+                           'executors': versions,
+                           'id': self.id,
+                           'key': self.key})
         log.info('Awaiting handshake response: [%s]:%s', self.host, self.port)
+        # TODO
         try:
-            data = self.input.read(PacketManager.SIZE_PACK.size)
-            size = PacketManager.SIZE_PACK.unpack(data)[0]
-            packet = utf8text(zlib.decompress(self.input.read(size)))
-            resp = json.loads(packet)
+            resp = self.transport.get_handshake_response(response)
         except Exception:
             log.exception('Cannot understand handshake response: [%s]:%s', self.host, self.port)
             raise JudgeAuthenticationFailed()
