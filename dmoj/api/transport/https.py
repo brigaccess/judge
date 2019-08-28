@@ -1,5 +1,6 @@
 from __future__ import print_function
 
+import base64
 import errno
 import json
 import logging
@@ -42,6 +43,7 @@ class HTTPSTransport(object):
         self.api = api
         self.path = path
         self._closed = False
+        
         self.api_url = '%s:%s%s' % (host, port, path)
         self.session = requests.Session()
 
@@ -109,17 +111,14 @@ class HTTPSTransport(object):
             raise SystemExit(1)
 
     def _prepare_request(self, data):
-        if 'key' in data:
-            del data['key']
-
-        request = requests.Request('POST', url=self.api_url, headers={
-            'X-DMOJ-Key': self.key
-        }, json=data)
+        if 'key' not in data:
+            data['key'] = self.key
+        request = requests.Request('POST', url=self.api_url, json=data)
         return request.prepare()
 
     def _read_single(self):
         # TODO Exceptions?
-        prepared = self._prepare_request({})
+        prepared = self._prepare_request({'name': 'task'})
         response = self.session.send(prepared)
         return response
 
@@ -138,6 +137,8 @@ class HTTPSTransport(object):
         response = response.json()
         # Ignore empty payloads
         if 'name' in response:
+            if 'source' in response:
+                response['source'] = base64.b64decode(response['source'])
             self.api.receive_packet(response)
 
     def get_handshake_response(self, response):
