@@ -178,7 +178,7 @@ class Judge(object):
         # the compiler may have failed, or an error could have happened while initializing a custom judge
         # either way, we can't continue
         if binary:
-            self.api.begin_grading_packet(problem.is_pretested)
+            self.api.begin_grading_packet(grader.is_pretested)
             batch_counter = 1
             in_batch = False
 
