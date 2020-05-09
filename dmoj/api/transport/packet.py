@@ -11,12 +11,15 @@ import threading
 import time
 import traceback
 import zlib
-
-import six
+from typing import List, Optional, TYPE_CHECKING, Tuple
 
 from dmoj import sysinfo
 from dmoj.judgeenv import get_supported_problems, get_runtime_versions
+from dmoj.result import Result
 from dmoj.utils.unicode import utf8text, utf8bytes
+
+if TYPE_CHECKING:
+    from dmoj.judge import Judge
 
 try:
     import ssl
@@ -34,15 +37,20 @@ class JudgeAuthenticationFailed(Exception):
 class SocketTransport(object):
     SIZE_PACK = struct.Struct('!I')
 
-    def __init__(self, host, port, name, key, api=None, secure=False, no_cert_check=False, cert_store=None):
+    ssl_context: Optional[ssl.SSLContext]
+
+    def __init__(self, host: str, port: int, name: str, key: str, api=None,
+                 secure: bool = False, no_cert_check: bool = False,
+                 cert_store: Optional[str] = None):
         self.host = host
         self.port = port
         self.name = name
+        self.key = key
         self.api = api
         self._closed = False
 
         log.info('Preparing to connect to [%s]:%s as: %s', host, port, name)
-        if secure and ssl:
+        if secure:
             self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
             self.ssl_context.options |= ssl.OP_NO_SSLv2
             self.ssl_context.options |= ssl.OP_NO_SSLv3
@@ -66,6 +74,7 @@ class SocketTransport(object):
 
         self._lock = threading.RLock()
         self._batch = 0
+
         # Exponential backoff: starting at 4 seconds.
         # Certainly hope it won't stack overflow, since it will take days if not years.
         self.fallback = 4
@@ -132,7 +141,7 @@ class SocketTransport(object):
             self.conn.shutdown(socket.SHUT_RDWR)
         self._closed = True
 
-    def _read_async(self):
+    def _read_forever(self):
         try:
             while True:
                 self._receive_packet(self._read_single())
@@ -142,7 +151,7 @@ class SocketTransport(object):
             traceback.print_exc()
             raise SystemExit(1)
 
-    def _read_single(self):
+    def _read_single(self) -> dict:
         try:
             data = self.input.read(SocketTransport.SIZE_PACK.size)
         except socket.error:
@@ -161,10 +170,10 @@ class SocketTransport(object):
             return json.loads(utf8text(packet))
 
     def run(self):
-        self._read_async()
+        self._read_forever()
 
     def run_async(self):
-        threading.Thread(target=self._read_async).start()
+        threading.Thread(target=self._read_forever).start()
 
     def send_packet(self, packet, rewrite=True):
         raw = zlib.compress(utf8bytes(json.dumps(packet)))

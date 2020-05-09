@@ -1,25 +1,17 @@
 import threading
 import unittest
+from http.server import HTTPServer
+from unittest import mock
 
 import requests
 
 from dmoj.control import JudgeControlRequestHandler
 
-try:
-    from http.server import HTTPServer
-except ImportError:
-    from BaseHTTPServer import HTTPServer
-
-try:
-    from unittest import mock
-except ImportError:
-    import mock
-
 
 class ControlServerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        class FakeJudge(object):
+        class FakeJudge:
             pass
 
         class Handler(JudgeControlRequestHandler):

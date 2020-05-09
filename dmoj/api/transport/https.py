@@ -14,8 +14,6 @@ import traceback
 import zlib
 import requests
 
-import six
-
 from dmoj import sysinfo
 from dmoj.judgeenv import get_supported_problems, get_runtime_versions
 from dmoj.utils.unicode import utf8text, utf8bytes
@@ -43,7 +41,7 @@ class HTTPSTransport(object):
         self.api = api
         self.path = path
         self._closed = False
-        
+
         self.api_url = '%s:%s%s' % (host, port, path)
         self.session = requests.Session()
 
@@ -120,6 +118,7 @@ class HTTPSTransport(object):
         # TODO Exceptions?
         prepared = self._prepare_request({'name': 'task'})
         response = self.session.send(prepared)
+        print(response)
         return response
 
     def run(self):

@@ -4,10 +4,10 @@ class InvalidInitException(Exception):
     """
 
     def __init__(self, message):
-        super(InvalidInitException, self).__init__(message)
+        super().__init__(message)
 
 
-class ConfigNode(object):
+class ConfigNode:
     """
     A wrapper around a YAML configuration object for easier use.
 

@@ -1,26 +1,32 @@
+import itertools
 import os
+import re
 import subprocess
 import zipfile
+from collections import defaultdict
 from functools import partial
 
-import six
 import yaml
 from yaml.parser import ParserError
 from yaml.scanner import ScannerError
 
 from dmoj import checkers
-from dmoj.config import InvalidInitException, ConfigNode
-from dmoj.error import InternalError
+from dmoj.config import ConfigNode, InvalidInitException
 from dmoj.generator import GeneratorManager
 from dmoj.judgeenv import env, get_problem_root
+from dmoj.utils.helper_files import parse_helper_file_error
 from dmoj.utils.module import load_module_from_file
 
+DEFAULT_TEST_CASE_INPUT_PATTERN = r'^(?=.*?\.in|in).*?(?:(?:^|\W)(?P<batch>\d+)[^\d\s]+)?(?P<case>\d+)[^\d\s]*$'
+DEFAULT_TEST_CASE_OUTPUT_PATTERN = r'^(?=.*?\.out|out).*?(?:(?:^|\W)(?P<batch>\d+)[^\d\s]+)?(?P<case>\d+)[^\d\s]*$'
 
-class Problem(object):
-    def __init__(self, problem_id, time_limit, memory_limit):
+
+class Problem:
+    def __init__(self, problem_id, time_limit, memory_limit, meta):
         self.id = problem_id
         self.time_limit = time_limit
         self.memory_limit = memory_limit
+        self.meta = ConfigNode(meta)
         self.generator_manager = GeneratorManager()
 
         self.problem_data = ProblemDataManager(problem_id)
@@ -40,11 +46,106 @@ class Problem(object):
                 'binary_data': False,
                 'short_circuit': True,
                 'symlinks': {},
+                'meta': meta,
             })
         except (IOError, KeyError, ParserError, ScannerError) as e:
             raise InvalidInitException(str(e))
 
         self.problem_data.archive = self._resolve_archive_files()
+        self._resolve_test_cases()
+
+    def _match_test_cases(self, filenames, input_case_pattern, output_case_pattern, case_points):
+        def try_match_int(match, group):
+            try:
+                val = match.group(group)
+            except IndexError:
+                return None
+
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return val
+
+        def parse_position(pattern, filename):
+            match = pattern.match(filename)
+            if not match:
+                return None
+
+            # Allow batches and case numbers to be alphanumeric, in which case we will sort them lexicographically.
+            # Still attempt to process them as integers first, though, since most problems will use this format.
+            return try_match_int(match, 'batch'), try_match_int(match, 'case')
+
+        class _TestCase:
+            input_file = None
+            output_file = None
+
+        # Match all cases with the same (batch, position) mapping.
+        groups = defaultdict(lambda: defaultdict(_TestCase))
+        batch_ids = set()
+
+        for filetype, pattern in (('input_file', input_case_pattern), ('output_file', output_case_pattern)):
+            for testcase_file in filenames:
+                testcase_parse = parse_position(pattern, testcase_file)
+                if testcase_parse is None:
+                    continue
+
+                batch, case = testcase_parse
+                if case is None:
+                    raise InvalidInitException('test case format yielded no case number')
+                if batch is not None:
+                    batch_ids.add(batch)
+
+                setattr(groups[batch or case][case], filetype, testcase_file)
+
+        test_cases = []
+        for batch_or_case_id in sorted(groups.keys()):
+            group_cases = groups[batch_or_case_id]
+            if batch_or_case_id in batch_ids:
+                test_cases.append({
+                    'batched': [{
+                        'in': testcase.input_file,
+                        'out': testcase.output_file,
+                    } for _, testcase in sorted(group_cases.items())],
+                    'points': next(case_points),
+                })
+            else:
+                if len(group_cases) > 1:
+                    raise InvalidInitException('problem has conflicting test cases: %s' % group_cases)
+                test_case = next(iter(group_cases.values()))
+                test_cases.append({
+                    'in': test_case.input_file,
+                    'out': test_case.output_file,
+                    'points': next(case_points),
+                })
+
+        return test_cases
+
+    def _problem_file_list(self):
+        # We *could* support testcase format specifiers without an archive, but it's harder and most problems should be
+        # using archives in the first place.
+        if not self.problem_data.archive:
+            raise InvalidInitException('can only use test case format specifiers if `archive` is set')
+        return self.problem_data.archive.namelist()
+
+    def _resolve_test_cases(self):
+        test_cases = self.config.test_cases
+
+        # We support several ways for specifying cases. The first is a list of cases, and requires no extra work.
+        if test_cases is not None and isinstance(test_cases.unwrap(), list):
+            return
+
+        def get_with_default(name, default):
+            if not test_cases:
+                return default
+            return test_cases[name] or default
+
+        # If the `test_cases` node is None, we try to guess the testcase name format.
+        self.config['test_cases'] = self._match_test_cases(
+            self._problem_file_list(),
+            re.compile(get_with_default('input_format', DEFAULT_TEST_CASE_INPUT_PATTERN), re.IGNORECASE),
+            re.compile(get_with_default('output_format', DEFAULT_TEST_CASE_OUTPUT_PATTERN), re.IGNORECASE),
+            iter(get_with_default('case_points', itertools.repeat(1))),
+        )
 
     def load_checker(self, name):
         if name in self._checkers:
@@ -67,18 +168,20 @@ class Problem(object):
 
 class ProblemDataManager(dict):
     def __init__(self, problem_id, **kwargs):
-        super(ProblemDataManager, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.problem_id = problem_id
         self.archive = None
 
     def __missing__(self, key):
         base = get_problem_root(self.problem_id)
         try:
-            return open(os.path.join(base, key), 'rb').read()
+            with open(os.path.join(base, key), 'rb') as f:
+                return f.read()
         except IOError:
             if self.archive:
                 zipinfo = self.archive.getinfo(key)
-                return self.archive.open(zipinfo).read()
+                with self.archive.open(zipinfo) as f:
+                    return f.read()
             raise KeyError('file "%s" could not be found in "%s"' % (key, base))
 
     def __del__(self):
@@ -86,7 +189,7 @@ class ProblemDataManager(dict):
             self.archive.close()
 
 
-class BatchedTestCase(object):
+class BatchedTestCase:
     def __init__(self, batch_no, config, problem, cases):
         self.config = config
         self.batch_no = batch_no
@@ -100,7 +203,7 @@ class BatchedTestCase(object):
         return 'BatchedTestCase{cases=%s}' % str(self.batched_cases)
 
 
-class TestCase(object):
+class TestCase:
     def __init__(self, count, batch_no, config, problem):
         self.position = count
         self.batch = batch_no
@@ -140,74 +243,57 @@ class TestCase(object):
         # resource limits on how to run the generator
         time_limit = env.generator_time_limit
         memory_limit = env.generator_memory_limit
-        compiler_time_limit = env.compiler_time_limit
-        use_sandbox = env.generator_sandboxing
+        compiler_time_limit = env.generator_compiler_time_limit
         lang = None  # Default to C/C++
 
         base = get_problem_root(self.problem.id)
-        if isinstance(gen, six.string_types):
+        if isinstance(gen, str):
             filenames = gen
         elif isinstance(gen.unwrap(), list):
             filenames = list(gen.unwrap())
         else:
-            if isinstance(gen.source, six.string_types):
+            if isinstance(gen.source, str):
                 filenames = gen.source
             elif isinstance(gen.source.unwrap(), list):
                 filenames = list(gen.source.unwrap())
+            else:
+                raise InvalidInitException("invalid generator declaration")
 
             if gen.flags:
                 flags += gen.flags
             if not args and gen.args:
                 args += gen.args
 
-
             time_limit = gen.time_limit or time_limit
             memory_limit = gen.memory_limit or memory_limit
             compiler_time_limit = gen.compiler_time_limit or compiler_time_limit
             lang = gen.language
 
-            # Optionally allow disabling the sandbox
-            if gen.use_sandbox is not None:
-                use_sandbox = gen.use_sandbox
-
         if not isinstance(filenames, list):
             filenames = [filenames]
 
         filenames = [os.path.join(base, name) for name in filenames]
-
         executor = self.problem.generator_manager.get_generator(filenames, flags, lang=lang,
                                                                 compiler_time_limit=compiler_time_limit)
 
         # convert all args to str before launching; allows for smoother int passing
         args = map(str, args)
 
-        # we allow both "trusted" and "untrusted" generators, for different scenarios:
-        # e.g., an untrusted generator may be one generated via site-managed data by an
-        # arbitrary user, who shouldn't be allowed to do arbitrary things on the host machine
-        if use_sandbox:
-            # setting large buffers is really important, because otherwise stderr is unbuffered
-            # and the generator begins calling into cptbox Python code really frequently
-            proc = executor.launch(*args, time=time_limit, memory=memory_limit, pipe_stderr=True,
-                                   stderr_buffer_size=65536, stdout_buffer_size=65536)
-        else:
-            proc = executor.launch_unsafe(*args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                          stderr=subprocess.PIPE)
+        # setting large buffers is really important, because otherwise stderr is unbuffered
+        # and the generator begins calling into cptbox Python code really frequently
+        proc = executor.launch(*args, time=time_limit, memory=memory_limit,
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               stderr_buffer_size=65536, stdout_buffer_size=65536)
 
         try:
             input = self.problem.problem_data[self.config['in']] if self.config['in'] else None
         except KeyError:
             input = None
-        self._generated = list(map(self._normalize, proc.communicate(input)))
 
-        if hasattr(proc, 'tle') and proc.tle:
-            raise InternalError('generator timed out (> %s seconds)' % time_limit)
-        if hasattr(proc, 'mle') and proc.mle:
-            raise InternalError('generator ran out of memory (> %s Kb)' % memory_limit)
-        if hasattr(proc, 'protection_fault') and proc.protection_fault:
-            syscall, callname, args = proc.protection_fault
-            raise InternalError('generator invoked disallowed syscall %s (%s)' % (syscall, callname))
-        if proc.returncode:
-            raise InternalError('generator exited with nonzero code: %s' % proc.returncode)
+        stdout, stderr = proc.unsafe_communicate(input)
+        self._generated = list(map(self._normalize, (stdout, stderr)))
+
+        parse_helper_file_error(proc, executor, 'generator', stderr, time_limit, memory_limit)
 
     def input_data(self):
         gen = self.config.generator
@@ -220,7 +306,7 @@ class TestCase(object):
             if self._generated[0]:
                 return self._generated[0]
         # in file is optional
-        return self._normalize(self.problem.problem_data[self.config['in']]) if self.config['in'] else ''
+        return self._normalize(self.problem.problem_data[self.config['in']]) if self.config['in'] else b''
 
     def output_data(self):
         if self.config.out:
@@ -230,6 +316,7 @@ class TestCase(object):
             if self._generated is None:
                 self._run_generator(gen, args=self.config.generator_args)
             return self._generated[1]
+        return b''
 
     def checker(self):
         try:

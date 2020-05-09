@@ -12,11 +12,11 @@ class Executor(PythonExecutor):
             cls._pypy_versions = [tuple(map(int, version.split('.')))
                                   for version in cls.version_regex.findall(output)]
             return cls._pypy_versions[1]
-        except:
+        except Exception:
             return None
 
     @classmethod
     def get_runtime_versions(cls):
         # A little hack to report implemented Python version too
-        return tuple(list(super(Executor, cls).get_runtime_versions()) +
+        return tuple(list(super().get_runtime_versions()) +
                      [('implementing python', cls._pypy_versions[0])])
