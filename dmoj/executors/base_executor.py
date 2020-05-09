@@ -10,7 +10,7 @@ from distutils.spawn import find_executable
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from dmoj.executors.mixins import PlatformExecutorMixin
-from dmoj.judgeenv import env
+from dmoj.judgeenv import env, skip_self_test
 from dmoj.result import Result
 from dmoj.utils.ansi import print_ansi
 from dmoj.utils.error import print_protection_fault
@@ -35,8 +35,15 @@ class BaseExecutor(PlatformExecutorMixin):
 
     _dir: Optional[str] = None
 
-    def __init__(self, problem_id: str, source_code: bytes, dest_dir: Optional[str] = None,
-                 hints: Optional[List[str]] = None, unbuffered: bool = False, **kwargs):
+    def __init__(
+        self,
+        problem_id: str,
+        source_code: bytes,
+        dest_dir: Optional[str] = None,
+        hints: Optional[List[str]] = None,
+        unbuffered: bool = False,
+        **kwargs
+    ):
         self._tempdir = dest_dir or env.tempdir
         self._dir = None
         self.problem = problem_id
@@ -116,11 +123,10 @@ class BaseExecutor(PlatformExecutorMixin):
             return False
         if not os.path.isfile(command):
             return False
-        return cls.run_self_test()
+        return skip_self_test or cls.run_self_test()
 
     @classmethod
-    def run_self_test(cls, output: bool = True,
-                      error_callback: Optional[Callable[[Any], Any]] = None) -> bool:
+    def run_self_test(cls, output: bool = True, error_callback: Optional[Callable[[Any], Any]] = None) -> bool:
         if not cls.test_program:
             return True
 
@@ -128,8 +134,9 @@ class BaseExecutor(PlatformExecutorMixin):
             print_ansi("%-39s%s" % ('Self-testing #ansi[%s](|underline):' % cls.get_executor_name(), ''), end=' ')
         try:
             executor = cls(cls.test_name, utf8bytes(cls.test_program))
-            proc = executor.launch(time=cls.test_time, memory=cls.test_memory,
-                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            proc = executor.launch(
+                time=cls.test_time, memory=cls.test_memory, stdin=subprocess.PIPE, stdout=subprocess.PIPE
+            )
 
             test_message = b'echo: Hello, World!'
             stdout, stderr = proc.communicate(test_message + b'\n')
@@ -146,8 +153,9 @@ class BaseExecutor(PlatformExecutorMixin):
                 # Cache the versions now, so that the handshake packet doesn't take ages to generate
                 cls.get_runtime_versions()
                 usage = '[%.3fs, %d KB]' % (proc.execution_time, proc.max_memory)
-                print_ansi("%s %-19s" % (['#ansi[Failed](red|bold) ',
-                                          '#ansi[Success](green|bold)'][res], usage), end=' ')
+                print_ansi(
+                    "%s %-19s" % (['#ansi[Failed](red|bold) ', '#ansi[Success](green|bold)'][res], usage), end=' '
+                )
 
                 runtime_version: List[Tuple[str, str]] = []
                 for runtime, version in cls.get_runtime_versions():

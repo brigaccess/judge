@@ -56,7 +56,7 @@ class Result:
 
     @property
     def output(self):
-        return utf8text(self.proc_output[:self.case.output_prefix_length], 'replace')
+        return utf8text(self.proc_output[: self.case.output_prefix_length], 'replace')
 
     @classmethod
     def get_feedback_str(cls, error, process, binary):
@@ -69,11 +69,11 @@ class Result:
             feedback = ''
 
         if not feedback and is_ir_or_rte:
-            if not process.was_initialized:
+            if not process.was_initialized or (error and b'error while loading shared libraries' in error):
                 # Process may failed to initialize, resulting in a SIGKILL without any prior signals.
                 # See <https://github.com/DMOJ/judge/issues/179> for more details.
                 feedback = 'failed initializing'
-            else:
+            elif process.signal:
                 feedback = strsignal(process.signal).lower()
 
         if process.protection_fault:

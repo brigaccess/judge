@@ -27,23 +27,31 @@ class BridgedInteractiveGrader(StandardGrader):
         if return_code not in contrib_modules:
             raise InternalError('%s is not a valid return code parser' % return_code)
 
-        return contrib_modules[return_code].ContribModule.parse_return_code(self._interactor, self.interactor_binary,
-                                                                            case.points, self._interactor_time_limit,
-                                                                            self._interactor_memory_limit,
-                                                                            feedback=utf8text(stderr)
-                                                                            if self.handler_data.feedback else None,
-                                                                            name='interactor', stderr=stderr)
+        return contrib_modules[return_code].ContribModule.parse_return_code(
+            self._interactor,
+            self.interactor_binary,
+            case.points,
+            self._interactor_time_limit,
+            self._interactor_memory_limit,
+            feedback=utf8text(stderr) if self.handler_data.feedback else None,
+            name='interactor',
+            stderr=stderr,
+        )
 
     def _launch_process(self, case):
-        submission_stdin, self._stdout_pipe = os.pipe()
-        self._stdin_pipe, submission_stdout = os.pipe()
+        self._interactor_stdin_pipe, submission_stdout_pipe = os.pipe()
+        submission_stdin_pipe, self._interactor_stdout_pipe = os.pipe()
         self._current_proc = self.binary.launch(
-            time=self.problem.time_limit, memory=self.problem.memory_limit, symlinks=case.config.symlinks,
-            stdin=submission_stdin, stdout=submission_stdout, stderr=subprocess.PIPE,
+            time=self.problem.time_limit,
+            memory=self.problem.memory_limit,
+            symlinks=case.config.symlinks,
+            stdin=submission_stdin_pipe,
+            stdout=submission_stdout_pipe,
+            stderr=subprocess.PIPE,
             wall_time=case.config.wall_time_factor * self.problem.time_limit,
         )
-        os.close(submission_stdin)
-        os.close(submission_stdout)
+        os.close(submission_stdin_pipe)
+        os.close(submission_stdout_pipe)
 
     def _interact_with_process(self, case, result, input):
         output = case.output_data()
@@ -52,13 +60,17 @@ class BridgedInteractiveGrader(StandardGrader):
 
         with mktemp(input) as input_file, mktemp(output) as output_file:
             self._interactor = self.interactor_binary.launch(
-                input_file.name, output_file.name, time=self._interactor_time_limit,
-                memory=self._interactor_memory_limit, stdin=self._stdin_pipe, stdout=self._stdout_pipe,
+                input_file.name,
+                output_file.name,
+                time=self._interactor_time_limit,
+                memory=self._interactor_memory_limit,
+                stdin=self._interactor_stdin_pipe,
+                stdout=self._interactor_stdout_pipe,
                 stderr=subprocess.PIPE,
             )
 
-            os.close(self._stdin_pipe)
-            os.close(self._stdout_pipe)
+            os.close(self._interactor_stdin_pipe)
+            os.close(self._interactor_stdout_pipe)
 
             self._current_proc.wait()
             self._interactor.wait()
@@ -67,7 +79,13 @@ class BridgedInteractiveGrader(StandardGrader):
 
     def _generate_interactor_binary(self):
         files = self.handler_data.files
-        if not isinstance(files, list):
-            files = [files]
-        files = [os.path.join(get_problem_root(self.problem.id), f) for f in files]
-        return compile_with_auxiliary_files(files, self.handler_data.lang, self.handler_data.compiler_time_limit)
+        if isinstance(files, str):
+            filenames = [files]
+        elif isinstance(files.unwrap(), list):
+            filenames = list(files.unwrap())
+        filenames = [os.path.join(get_problem_root(self.problem.id), f) for f in filenames]
+        flags = self.handler_data.get('flags', [])
+        should_cache = self.handler_data.get('cached', True)
+        return compile_with_auxiliary_files(
+            filenames, flags, self.handler_data.lang, self.handler_data.compiler_time_limit, should_cache
+        )

@@ -1,43 +1,47 @@
 import argparse
 import os
 import ssl
-from typing import List, Set
+from typing import Dict, List, Set
 
 import yaml
 
 from dmoj.config import ConfigNode
+
 # noinspection PyUnresolvedReferences
 from dmoj.utils import pyyaml_patch  # noqa: F401, imported for side effect
 from dmoj.utils.unicode import utf8text
 
 problem_dirs = ()
 problem_watches = ()
-env = ConfigNode(defaults={
-    'selftest_time_limit': 10,  # 10 seconds
-    'selftest_memory_limit': 131072,  # 128mb of RAM
-    'generator_compiler_time_limit': 30,  # 30 seconds
-    'generator_time_limit': 20,  # 20 seconds
-    'generator_memory_limit': 524288,  # 512mb of RAM
-    'compiler_time_limit': 10,  # Kill compiler after 10 seconds
-    'compiler_size_limit': 131072,  # Maximum allowable compiled file size, 128mb
-    'compiler_output_character_limit': 65536,  # Number of characters allowed in compile output
-    'compiled_binary_cache_dir': None,  # Location to store cached binaries, defaults to tempdir
-    'compiled_binary_cache_size': 100,  # Maximum number of executables to cache (LRU order)
-    'runtime': {},
-    # Map of executor: [list of extra allowed file regexes], used to configure
-    # the filesystem sandbox on a per-machine basis, without having to hack
-    # executor source.
-    'extra_fs': {},
-    # List of judge URLs to ping on problem data updates (the URLs are expected
-    # to host judges running with --api-host and --api-port)
-    'update_pings': [],
-    # Directory to use as temporary submission storage, system default
-    # (e.g. /tmp) if left blank.
-    'tempdir': None,
-}, dynamic=False)
+env = ConfigNode(
+    defaults={
+        'selftest_time_limit': 10,  # 10 seconds
+        'selftest_memory_limit': 131072,  # 128mb of RAM
+        'generator_compiler_time_limit': 30,  # 30 seconds
+        'generator_time_limit': 20,  # 20 seconds
+        'generator_memory_limit': 524288,  # 512mb of RAM
+        'compiler_time_limit': 10,  # Kill compiler after 10 seconds
+        'compiler_size_limit': 131072,  # Maximum allowable compiled file size, 128mb
+        'compiler_output_character_limit': 65536,  # Number of characters allowed in compile output
+        'compiled_binary_cache_dir': None,  # Location to store cached binaries, defaults to tempdir
+        'compiled_binary_cache_size': 100,  # Maximum number of executables to cache (LRU order)
+        'runtime': {},
+        # Map of executor: [list of extra allowed file regexes], used to configure
+        # the filesystem sandbox on a per-machine basis, without having to hack
+        # executor source.
+        'extra_fs': {},
+        # List of judge URLs to ping on problem data updates (the URLs are expected
+        # to host judges running with --api-host and --api-port)
+        'update_pings': [],
+        # Directory to use as temporary submission storage, system default
+        # (e.g. /tmp) if left blank.
+        'tempdir': None,
+    },
+    dynamic=False,
+)
 _root = os.path.dirname(__file__)
 
-log_file = server_host = server_port = no_ansi = no_watchdog = problem_regex = case_regex = None
+log_file = server_host = server_port = no_ansi = skip_self_test = no_watchdog = problem_regex = case_regex = None
 secure = no_cert_check = False
 cert_store = api_listen = transport = endpoint = interval = None
 
@@ -49,10 +53,7 @@ exclude_executors: Set[str] = set()
 
 
 def load_env(cli=False, testsuite=False):  # pragma: no cover
-    global problem_dirs, only_executors, exclude_executors, log_file, server_host, \
-        server_port, no_ansi, no_ansi_emu, env, startup_warnings, no_watchdog, \
-        problem_regex, case_regex, api_listen, secure, no_cert_check, cert_store, \
-        problem_watches, cli_command, transport, endpoint, interval
+    global problem_dirs, only_executors, exclude_executors, log_file, server_host, server_port, no_ansi, no_ansi_emu, env, startup_warnings, no_watchdog, problem_regex, case_regex, api_listen, secure, no_cert_check, cert_store, problem_watches, cli_command, transport, endpoint, interval
 
     if cli:
         description = 'Starts a shell for interfacing with a local judge instance.'
@@ -64,44 +65,50 @@ def load_env(cli=False, testsuite=False):  # pragma: no cover
         parser.add_argument('server_host', help='host to connect for the server')
         parser.add_argument('judge_name', nargs='?', help='judge name (overrides configuration)')
         parser.add_argument('judge_key', nargs='?', help='judge key (overrides configuration)')
-        parser.add_argument('-p', '--server-port', type=int, default=9999,
-                            help='port to connect for the server')
+        parser.add_argument('-p', '--server-port', type=int, default=9999, help='port to connect for the server')
         # TODO the rest of the owl
         parser.add_argument('-t', '--transport', choices=['socket', 'https'], default='socket',
                             help='connection transport to be used')
         parser.add_argument('--endpoint', type=str, default='/', help='path to https endpoint')
         parser.add_argument('-i', '--interval', type=int, default=5, help='https request interval')
+
     else:
         parser.add_argument('command', nargs='*', help='invoke CLI command without spawning shell')
 
-    parser.add_argument('-c', '--config', type=str, default='~/.dmojrc',
-                        help='file to load judge configurations from (default: ~/.dmojrc)')
+    parser.add_argument(
+        '-c',
+        '--config',
+        type=str,
+        default='~/.dmojrc',
+        help='file to load judge configurations from (default: ~/.dmojrc)',
+    )
 
     if not cli:
-        parser.add_argument('-l', '--log-file',
-                            help='log file to use')
-        parser.add_argument('--no-watchdog', action='store_true',
-                            help='disable use of watchdog on problem directories')
-        parser.add_argument('-a', '--api-port', type=int, default=None,
-                            help='port to listen for the judge API (do not expose to public, '
-                                 'security is left as an exercise for the reverse proxy)')
-        parser.add_argument('-A', '--api-host', default='127.0.0.1',
-                            help='IPv4 address to listen for judge API')
+        parser.add_argument('-l', '--log-file', help='log file to use')
+        parser.add_argument('--no-watchdog', action='store_true', help='disable use of watchdog on problem directories')
+        parser.add_argument(
+            '-a',
+            '--api-port',
+            type=int,
+            default=None,
+            help='port to listen for the judge API (do not expose to public, '
+            'security is left as an exercise for the reverse proxy)',
+        )
+        parser.add_argument('-A', '--api-host', default='127.0.0.1', help='IPv4 address to listen for judge API')
 
-        parser.add_argument('-s', '--secure', action='store_true',
-                            help='connect to server via TLS')
-        parser.add_argument('-k', '--no-certificate-check', action='store_true',
-                            help='do not check TLS certificate')
-        parser.add_argument('-T', '--trusted-certificates', default=None,
-                            help='use trusted certificate file instead of system')
+        parser.add_argument('-s', '--secure', action='store_true', help='connect to server via TLS')
+        parser.add_argument('-k', '--no-certificate-check', action='store_true', help='do not check TLS certificate')
+        parser.add_argument(
+            '-T', '--trusted-certificates', default=None, help='use trusted certificate file instead of system'
+        )
 
     _group = parser.add_mutually_exclusive_group()
-    _group.add_argument('-e', '--only-executors',
-                        help='only listed executors will be loaded (comma-separated)')
-    _group.add_argument('-x', '--exclude-executors',
-                        help='prevent listed executors from loading (comma-separated)')
+    _group.add_argument('-e', '--only-executors', help='only listed executors will be loaded (comma-separated)')
+    _group.add_argument('-x', '--exclude-executors', help='prevent listed executors from loading (comma-separated)')
 
     parser.add_argument('--no-ansi', action='store_true', help='disable ANSI output')
+
+    parser.add_argument('--skip-self-test', action='store_true', help='skip executor self-tests')
 
     if testsuite:
         parser.add_argument('tests_dir', help='directory where tests are stored')
@@ -118,6 +125,7 @@ def load_env(cli=False, testsuite=False):  # pragma: no cover
     cli_command = getattr(args, 'command', [])
 
     no_ansi = args.no_ansi
+    skip_self_test = args.skip_self_test
     no_watchdog = True if cli else args.no_watchdog
     if not cli:
         api_listen = (args.api_host, args.api_port) if args.api_port else None
@@ -151,8 +159,9 @@ def load_env(cli=False, testsuite=False):  # pragma: no cover
         problem_dirs = env.problem_storage_root
         if problem_dirs is None:
             if not testsuite:
-                raise SystemExit('problem_storage_root not specified in "%s"; '
-                                 'no problems available to grade' % model_file)
+                raise SystemExit(
+                    'problem_storage_root not specified in "%s"; no problems available to grade' % model_file
+                )
         else:
             # Populate cache and send warnings
             get_problem_roots(warnings=True)
@@ -175,6 +184,7 @@ def load_env(cli=False, testsuite=False):  # pragma: no cover
         clear_problem_dirs_cache()
 
         import re
+
         if args.problem_regex:
             try:
                 problem_regex = re.compile(args.problem_regex)
@@ -187,12 +197,18 @@ def load_env(cli=False, testsuite=False):  # pragma: no cover
                 raise SystemExit('Invalid case regex')
 
 
-def get_problem_root(pid):
-    for dir in get_problem_roots():
-        path = os.path.join(dir, pid)
-        if os.path.exists(path):
-            return path
-    return None
+_problem_root_cache: Dict[str, str] = {}
+
+
+def get_problem_root(problem_id):
+    if problem_id not in _problem_root_cache or not os.path.isdir(_problem_root_cache[problem_id]):
+        for root_dir in get_problem_roots():
+            problem_root_dir = os.path.join(root_dir, problem_id)
+            if os.path.isdir(problem_root_dir):
+                _problem_root_cache[problem_id] = problem_root_dir
+                break
+
+    return _problem_root_cache[problem_id]
 
 
 _problem_dirs_cache = None
@@ -211,6 +227,7 @@ def get_problem_roots(warnings=False):
         _problem_dirs_cache = problem_dirs
         return problem_dirs
     elif isinstance(problem_dirs, ConfigNode):
+
         def find_directories_by_depth(dir, depth):
             if depth < 0:
                 raise ValueError('negative depth reached')
@@ -245,7 +262,7 @@ def get_problem_roots(warnings=False):
     if warnings:
         cleaned_dirs = []
         for dir in dirs:
-            if not os.path.exists(dir) or not os.path.isdir(dir):
+            if not os.path.isdir(dir):
                 startup_warnings.append('cannot access problem directory %s (does it exist?)' % dir)
                 continue
             cleaned_dirs.append(dir)
@@ -281,4 +298,5 @@ def get_supported_problems():
 
 def get_runtime_versions():
     from dmoj.executors import executors
+
     return {name: clazz.Executor.get_runtime_versions() for name, clazz in executors.items()}

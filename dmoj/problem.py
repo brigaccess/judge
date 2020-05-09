@@ -29,7 +29,9 @@ class Problem:
         self.meta = ConfigNode(meta)
         self.generator_manager = GeneratorManager()
 
-        self.problem_data = ProblemDataManager(problem_id)
+        # Cache root dir so that we don't need to scan all roots (potentially very slow on networked mount).
+        self.root_dir = get_problem_root(problem_id)
+        self.problem_data = ProblemDataManager(self)
 
         # Checkers modules must be stored in a dict, for the duration of execution,
         # lest globals be deleted with the module.
@@ -39,15 +41,18 @@ class Problem:
             doc = yaml.safe_load(self.problem_data['init.yml'])
             if not doc:
                 raise InvalidInitException('I find your lack of content disturbing.')
-            self.config = ConfigNode(doc, defaults={
-                'wall_time_factor': 3,
-                'output_prefix_length': 64,
-                'output_limit_length': 25165824,
-                'binary_data': False,
-                'short_circuit': True,
-                'symlinks': {},
-                'meta': meta,
-            })
+            self.config = ConfigNode(
+                doc,
+                defaults={
+                    'wall_time_factor': 3,
+                    'output_prefix_length': 64,
+                    'output_limit_length': 25165824,
+                    'binary_data': False,
+                    'short_circuit': True,
+                    'symlinks': {},
+                    'meta': meta,
+                },
+            )
         except (IOError, KeyError, ParserError, ScannerError) as e:
             raise InvalidInitException(str(e))
 
@@ -101,22 +106,22 @@ class Problem:
         for batch_or_case_id in sorted(groups.keys()):
             group_cases = groups[batch_or_case_id]
             if batch_or_case_id in batch_ids:
-                test_cases.append({
-                    'batched': [{
-                        'in': testcase.input_file,
-                        'out': testcase.output_file,
-                    } for _, testcase in sorted(group_cases.items())],
-                    'points': next(case_points),
-                })
+                test_cases.append(
+                    {
+                        'batched': [
+                            {'in': testcase.input_file, 'out': testcase.output_file}
+                            for _, testcase in sorted(group_cases.items())
+                        ],
+                        'points': next(case_points),
+                    }
+                )
             else:
                 if len(group_cases) > 1:
                     raise InvalidInitException('problem has conflicting test cases: %s' % group_cases)
                 test_case = next(iter(group_cases.values()))
-                test_cases.append({
-                    'in': test_case.input_file,
-                    'out': test_case.output_file,
-                    'points': next(case_points),
-                })
+                test_cases.append(
+                    {'in': test_case.input_file, 'out': test_case.output_file, 'points': next(case_points)}
+                )
 
         return test_cases
 
@@ -150,12 +155,12 @@ class Problem:
     def load_checker(self, name):
         if name in self._checkers:
             return self._checkers[name]
-        self._checkers[name] = checker = load_module_from_file(os.path.join(get_problem_root(self.id), name))
+        self._checkers[name] = checker = load_module_from_file(os.path.join(self.root_dir, name))
         return checker
 
     def _resolve_archive_files(self):
         if self.config.archive:
-            archive_path = os.path.join(get_problem_root(self.id), self.config.archive)
+            archive_path = os.path.join(self.root_dir, self.config.archive)
             if not os.path.exists(archive_path):
                 raise InvalidInitException('archive file "%s" does not exist' % archive_path)
             try:
@@ -167,22 +172,21 @@ class Problem:
 
 
 class ProblemDataManager(dict):
-    def __init__(self, problem_id, **kwargs):
+    def __init__(self, problem, **kwargs):
         super().__init__(**kwargs)
-        self.problem_id = problem_id
+        self.problem = problem
         self.archive = None
 
     def __missing__(self, key):
-        base = get_problem_root(self.problem_id)
         try:
-            with open(os.path.join(base, key), 'rb') as f:
+            with open(os.path.join(self.problem.root_dir, key), 'rb') as f:
                 return f.read()
         except IOError:
             if self.archive:
                 zipinfo = self.archive.getinfo(key)
                 with self.archive.open(zipinfo) as f:
                     return f.read()
-            raise KeyError('file "%s" could not be found in "%s"' % (key, base))
+            raise KeyError('file "%s" could not be found in "%s"' % (key, self.problem.root_dir))
 
     def __del__(self):
         if self.archive:
@@ -244,6 +248,7 @@ class TestCase:
         time_limit = env.generator_time_limit
         memory_limit = env.generator_memory_limit
         compiler_time_limit = env.generator_compiler_time_limit
+        should_cache = True
         lang = None  # Default to C/C++
 
         base = get_problem_root(self.problem.id)
@@ -267,23 +272,32 @@ class TestCase:
             time_limit = gen.time_limit or time_limit
             memory_limit = gen.memory_limit or memory_limit
             compiler_time_limit = gen.compiler_time_limit or compiler_time_limit
+            should_cache = gen.get('cached', True)
             lang = gen.language
 
         if not isinstance(filenames, list):
             filenames = [filenames]
 
         filenames = [os.path.join(base, name) for name in filenames]
-        executor = self.problem.generator_manager.get_generator(filenames, flags, lang=lang,
-                                                                compiler_time_limit=compiler_time_limit)
+        executor = self.problem.generator_manager.get_generator(
+            filenames, flags, lang=lang, compiler_time_limit=compiler_time_limit, should_cache=should_cache
+        )
 
         # convert all args to str before launching; allows for smoother int passing
         args = map(str, args)
 
         # setting large buffers is really important, because otherwise stderr is unbuffered
         # and the generator begins calling into cptbox Python code really frequently
-        proc = executor.launch(*args, time=time_limit, memory=memory_limit,
-                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               stderr_buffer_size=65536, stdout_buffer_size=65536)
+        proc = executor.launch(
+            *args,
+            time=time_limit,
+            memory=memory_limit,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stderr_buffer_size=65536,
+            stdout_buffer_size=65536
+        )
 
         try:
             input = self.problem.problem_data[self.config['in']] if self.config['in'] else None
