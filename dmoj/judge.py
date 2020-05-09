@@ -20,6 +20,8 @@ from dmoj.result import Result
 from dmoj.utils.ansi import ansi_style, print_ansi, strip_ansi
 from dmoj.utils.unicode import unicode_stdout_stderr, utf8bytes, utf8text
 
+from . import sentry_integration
+
 try:
     import readline  # noqa: F401, imported for the side-effect of making `input()` have readline.
 except ImportError:
