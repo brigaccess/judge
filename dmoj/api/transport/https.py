@@ -94,19 +94,16 @@ class HTTPSTransport(object):
         pass
 
     def _read_async(self):
-        try:
-            while True:
+        while True:
+            try:
                 self._receive_packet(self._read_single())
                 time.sleep(self.interval)
-        except KeyboardInterrupt:
-            pass
-        except requests.exceptions.RequestException:
-            # TODO Do something
-            traceback.print_exc()
-            pass
-        except Exception:
-            traceback.print_exc()
-            raise SystemExit(1)
+            except KeyboardInterrupt:
+                pass
+            except requests.exceptions.RequestException:
+                traceback.print_exc()
+            except Exception:
+                traceback.print_exc()
 
     def _prepare_request(self, data):
         if 'key' not in data:
@@ -118,7 +115,7 @@ class HTTPSTransport(object):
         # TODO Exceptions?
         prepared = self._prepare_request({'name': 'task'})
         response = self.session.send(prepared)
-        print(response)
+        print(response.text)
         return response
 
     def run(self):

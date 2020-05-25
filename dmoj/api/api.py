@@ -162,18 +162,17 @@ class ApiManager(object):
         problems = get_supported_problems()
         runtimes = get_runtime_versions()
         response = self._send_packet({'name': 'handshake', 'problems': problems, 'executors': runtimes, 'id': self.id, 'key': self.key})
-    
+
         log.info('Awaiting handshake response: [%s]:%s', self.host, self.port)
         # TODO
         try:
             resp = self.transport.get_handshake_response(response)
         except Exception:
             log.exception('Cannot understand handshake response: [%s]:%s', self.host, self.port)
-            raise JudgeAuthenticationFailed()
+            raise JudgeAuthenticationFailed('Handshake failed.')
         else:
-            if resp['name'] != 'handshake-success':
-                log.error('Handshake failed.')
-                raise JudgeAuthenticationFailed()
+            if 'name' not in resp or resp['name'] != 'handshake-success':
+                raise JudgeAuthenticationFailed('Handshake failed.')
 
     def supported_problems_packet(self, problems: List[Tuple[str, int]]):
         log.info('Update problems')
